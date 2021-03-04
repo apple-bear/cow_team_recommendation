@@ -14,8 +14,9 @@ def create_spark_context():
     return sc, spark
 
 # 这个方法是要把movie表变成一个dict，推荐电影时候可以根据movie_id(或者电影名)带出其他电影信息
-# 两种方法：1是给movie这个表添加一个新列movie_id，2是movie表与user表根据电影名进行join，获得user表中的movie_id，
-# 因为user表中有电影名StringIndexer之后的movie_id
+# 两种方法：1是给movie这个表添加一个新列movie_id，用user表StringIndexer这个fit过后的来transform movie表中的电影名
+# 2是movie表与user表根据电影名进行join，获得user表中的movie_id，因为user表中有电影名StringIndexer之后的movie_id
+#
 # def get_movie_dict(spark):
 #     movie_info_df = spark.read.csv('../dataset/dataset1/movie.csv', header=True)
 #     movie_info_df = movie_info_df.select('类型', '主演', '导演')
