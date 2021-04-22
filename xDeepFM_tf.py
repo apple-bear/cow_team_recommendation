@@ -14,11 +14,27 @@ import tensorflow.keras.backend as K
 # labelencoder+embedding lookup等价于one-hot？？？
 # ID类特征和类别型特征都做labelencoder么？？？
 
-user_file_path = '../dataset/dataset1/user.csv'
-movie_file_path = '../dataset/dataset1/movie.csv'
-user_data = pd.read_csv(user_file_path, usecols=['评分', '用户ID', '电影名'])
-movie_data = pd.read_csv(movie_file_path, usecols=['评分', '类型', '特色', '电影名', '导演', '主演'])
-data = pd.merge(user_data, movie_data, on='电影名', how='left', suffixes=('_x', '_y'))
+def data_load(data_path):
+    user_file_path = '../dataset/dataset1/user.csv'
+    movie_file_path = '../dataset/dataset1/movie.csv'
+    user_data = pd.read_csv(user_file_path, usecols=['评分', '用户ID', '电影名'])
+    movie_data = pd.read_csv(movie_file_path, usecols=['评分', '类型', '特色', '电影名', '导演', '主演'])
+    data = pd.merge(user_data, movie_data, on='电影名', how='left', suffixes=('_x', '_y'))
+
+    # 数值型特征
+    dense_feats = ['评分_x', '评分_y']
+    # 类别型特征
+    sparse_feats = ['用户ID', '电影名', '类型', '特色', '导演', '主演']
+
+    # data_path = '../dataset/criteo_sampled_data/criteo_sampled_data.csv'
+    # data = pd.read_csv(data_path)
+    # cols = data.columns.values
+    # # 数值型
+    # dense_feats = [f for f in cols if f[0] == "I"]
+    # # 类别型
+    # sparse_feats = [f for f in cols if f[0] == "C"]
+
+    return data, dense_feats, sparse_feats
 
 # #
 # l1 = LabelEncoder()
@@ -45,94 +61,85 @@ data = pd.merge(user_data, movie_data, on='电影名', how='left', suffixes=('_x
 # # 类别型
 # sparse_feats = [f for f in cols if f[0] == "C"]
 
+def feature_construction(data, dense_feats, sparse_feats):
+    def process_dense_feats(data, feats):
+        d = data.copy()
+        d = d[feats].fillna(0.0)
+        for f in feats:
+            d[f] = d[f].apply(lambda x: np.log(x + 1) if x > -1 else -1)
+        return d
 
-# 数值型特征
-dense_feats = ['评分_x', '评分_y']
-# 类别型特征
-sparse_feats = ['用户ID', '电影名', '类型', '特色', '导演', '主演']
+    # 每个sparse特征都要做labelencoder，否则会出错
+    def process_sparse_feats(data, feats):
+        d = data.copy()
+        d = d[feats].fillna("-1")
+        for f in feats:
+            label_encoder = LabelEncoder()
+            d[f] = label_encoder.fit_transform(d[f])
+        return d
 
+    data_dense = process_dense_feats(data, dense_feats)
+    data_sparse = process_sparse_feats(data, sparse_feats)
+    total_data = pd.concat([data_dense, data_sparse], axis=1)
+    total_data['label'] = np.random.randint(0, 2, 808835)
 
-def process_dense_feats(data, feats):
-    d = data.copy()
-    d = d[feats].fillna(0.0)
-    for f in feats:
-        d[f] = d[f].apply(lambda x: np.log(x + 1) if x > -1 else -1)
-
-    return d
-
-
-# 每个sparse特征都要做labelencoder，否则会出错
-def process_sparse_feats(data, feats):
-    d = data.copy()
-    d = d[feats].fillna("-1")
-    for f in feats:
-        label_encoder = LabelEncoder()
-        d[f] = label_encoder.fit_transform(d[f])
-
-    return d
-
-
-data_dense = process_dense_feats(data, dense_feats)
-data_sparse = process_sparse_feats(data, sparse_feats)
-total_data = pd.concat([data_dense, data_sparse], axis=1)
-total_data['label'] = np.random.randint(0, 2, 808835)
+    # 构造每个dense特征的输入
+    dense_inputs = []
+    for f in dense_feats:
+        _input = Input([1], name=f)
+        dense_inputs.append(_input)
 
 
-# 构造每个dense特征的输入
-dense_inputs = []
-for f in dense_feats:
-    _input = Input([1], name=f)
-    dense_inputs.append(_input)
-# 将输入拼接到一起
-concat_dense_inputs = Concatenate(axis=1)(dense_inputs)
-# 对dense特征加权求和，加权体现在哪里？？？
-fst_order_dense_layer = Dense(1)(concat_dense_inputs)
-
-
-# 单独对每一个sparse特征构造输入，目的是方便后面构造交叉特征？？？
-sparse_inputs = []
-for f in sparse_feats:
-    _input = Input([1], name=f)
-    sparse_inputs.append(_input)
-# sparse_inputs现在只是一个结构吧，没有数据？？？
-sparse_1d_embed = []
-for i, _input in enumerate(sparse_inputs):
-    f = sparse_feats[i]
-    # 获取特征列f的不重复元素个数
-    voc_size = total_data[f].nunique()
-    # 使用l2正则化防止过拟合
-    reg = tf.keras.regularizers.l2(0.5)
-    # 线性部分为什么要做embedding，查看一下这个embedding的结果？？？
-    # 把sparse特征embedding到1维通过embedding lookup方式找到对应的wi与直接onehot有什么区别？？？
-    # 下面的_input是实际数据么还是只是输入数据的结构？？？
-    _embed = Embedding(voc_size, 1, embeddings_regularizer=reg)(_input)
-    # 由于Embedding的结果是二维的，因此如果需要在Embedding之后加入Dense层，需要先连接上Flatten层
-    _embed = Flatten()(_embed)
-    sparse_1d_embed.append(_embed)
-# 对sparse特征加权求和，为什么dense加权求和是Dense，而sparse加权求和是Add
-fst_order_sparse_layer = Add()(sparse_1d_embed)
+    # 单独对每一个sparse特征构造输入，目的是方便后面构造交叉特征？？？
+    sparse_inputs = []
+    for f in sparse_feats:
+        _input = Input([1], name=f)
+        sparse_inputs.append(_input)
+    # sparse_inputs现在只是一个结构吧，没有数据？？？
+    sparse_1d_embed = []
+    for i, _input in enumerate(sparse_inputs):
+        f = sparse_feats[i]
+        # 获取特征列f的不重复元素个数
+        voc_size = total_data[f].nunique()
+        # 使用l2正则化防止过拟合
+        reg = tf.keras.regularizers.l2(0.5)
+        # 线性部分为什么要做embedding，查看一下这个embedding的结果？？？
+        # 把sparse特征embedding到1维通过embedding lookup方式找到对应的wi与直接onehot有什么区别？？？
+        # 下面的_input是实际数据么还是只是输入数据的结构？？？
+        _embed = Embedding(voc_size, 1, embeddings_regularizer=reg)(_input)
+        # 由于Embedding的结果是二维的，因此如果需要在Embedding之后加入Dense层，需要先连接上Flatten层
+        _embed = Flatten()(_embed)
+        sparse_1d_embed.append(_embed)
+    return total_data, dense_inputs, sparse_inputs, sparse_1d_embed
 
 
 # 将dense特征与sparse特征加权求和结果相加，完成模型最左侧Linear部分
-linear_part = Add()([fst_order_dense_layer, fst_order_sparse_layer])
+def linear(dense_inputs, sparse_1d_embed):
+    # 将dense输入拼接到一起
+    concat_dense_inputs = Concatenate(axis=1)(dense_inputs)
+    # 对dense特征加权求和，加权体现在哪里？？？
+    fst_order_dense_layer = Dense(1)(concat_dense_inputs)
+    # 对sparse特征加权求和，为什么dense加权求和是Dense，而sparse加权求和是Add
+    fst_order_sparse_layer = Add()(sparse_1d_embed)
+    linear_part = Add()([fst_order_dense_layer, fst_order_sparse_layer])
+    return linear_part
 
 
 # CIN
 # CIN的输入来自embedding层，假设有m个field，每个field的embedding维度为D，在进入CIN网络之前，需要先将sparse特征进行embedding并构建X0
-D = 8  # embedding size
-# 下面做的操作应该是把每个特征embedding成8维的向量，然后把embedding之后的每个特征拼接起来
-sparse_kd_embed = []
-for i, _input in enumerate(sparse_inputs):
-    # f:特征名称
-    f = sparse_feats[i]
-    # voc_size:f特征不重复元素个数
-    voc_size = total_data[f].nunique()
-    reg = tf.keras.regularizers.l2(0.7)
-    _embed = Embedding(voc_size+1, D, embeddings_regularizer=reg)(_input)
-    sparse_kd_embed.append(_embed)
-
-# 构建feature_map X0
-input_feature_map = Concatenate(axis=1)(sparse_kd_embed)
+def get_sparse_kd_embed(sparse_feats, sparse_inputs, D=8):
+    # D:embedding size
+    # 下面做的操作应该是把每个特征embedding成8维的向量，然后把embedding之后的每个特征拼接起来
+    sparse_kd_embed = []
+    for i, _input in enumerate(sparse_inputs):
+        # f:特征名称
+        f = sparse_feats[i]
+        # voc_size:f特征不重复元素个数
+        voc_size = total_data[f].nunique()
+        reg = tf.keras.regularizers.l2(0.7)
+        _embed = Embedding(voc_size+1, D, embeddings_regularizer=reg)(_input)
+        sparse_kd_embed.append(_embed)
+    return sparse_kd_embed
 
 
 def compressed_interaction_net(x0, xl, D, n_filters):
@@ -173,12 +180,11 @@ def compressed_interaction_net(x0, xl, D, n_filters):
     new_feature_maps = tf.transpose(new_feature_maps, [0, 2, 1])  # ?, n_filters, D
     return new_feature_maps
 
+
 # 这里 n_filters 是经过该 CIN 层后，输出的 feature map 的个数，也就是说最终生成了由 n_filters 个 D 维向量组成的输出矩阵。
 # 有了单层的CIN实现，下面可以实现多层CIN网络，注意CIN网络的输出是每一层的feature maps进行进行sum pooling，然后concat起来
 # feature maps就是单层CIN吧？？？feature maps应该是原始数据进行映射之后的矩阵，CIN是要经过各种操作的网络
 # 一层CIN包含了从x0到xl，多层CIN包括了多个x0到xl
-
-
 def build_cin(x0, D=8, n_layers=3, n_filters=12):
     """
     构建多层CIN网络
@@ -202,44 +208,64 @@ def build_cin(x0, D=8, n_layers=3, n_filters=12):
     return output
 
 
-# 生成CIN, input_feature_map来自sparse特征
-cin_layer = build_cin(input_feature_map)
-# 经过3层CIN网络，每一层filter个数是12，意味着会产生出3个12*D的feature maps，再经过sum-pooling和concat后，就得到3*12=36维的向量
+# DNN部分
+def dnn(sparse_kd_embed):
+    # 输入DNN部分的sparse_kd_embed连接方式与输入CIN的sparse_kd_embed连接方式不一样，axis不一样
+    embed_inputs = Flatten()(Concatenate(axis=-1)(sparse_kd_embed))
+
+    fc_layer = Dropout(0.5)(Dense(128, activation='relu')(embed_inputs))
+    fc_layer = Dropout(0.3)(Dense(128, activation='relu')(fc_layer))
+    fc_layer_output = Dropout(0.1)(Dense(128, activation='relu')(fc_layer))
+    return fc_layer_output
 
 
-# DNN部分，输入DNN部分的sparse_kd_embed连接方式与输入CIN的sparse_kd_embed连接方式不一样，axis不一样
-embed_inputs = Flatten()(Concatenate(axis=-1)(sparse_kd_embed))
+def output_and_model(linear_part, cin_layer, fc_layer_output):
 
-fc_layer = Dropout(0.5)(Dense(128, activation='relu')(embed_inputs))
-fc_layer = Dropout(0.3)(Dense(128, activation='relu')(fc_layer))
-fc_layer_output = Dropout(0.1)(Dense(128, activation='relu')(fc_layer))
+    # 输出部分
+    concat_layer = Concatenate()([linear_part, cin_layer, fc_layer_output])
+    output_layer = Dense(1, activation='sigmoid')(concat_layer)
+    # 完善模型
+    model = Model(dense_inputs+sparse_inputs, output_layer)
+    model.compile(optimizer='adam',
+                  loss='binary_crossentropy',
+                  metrics=['binary_crossentropy', tf.keras.metrics.AUC(name='auc')])
+    return model
 
 
-# 输出部分
-concat_layer = Concatenate()([linear_part, cin_layer, fc_layer_output])
-output_layer = Dense(1, activation='sigmoid')(concat_layer)
-# 完善模型
-model = Model(dense_inputs+sparse_inputs, output_layer)
-model.compile(optimizer='adam',
-              loss='binary_crossentropy',
-              metrics=['binary_crossentropy', tf.keras.metrics.AUC(name='auc')])
+if __name__ == "__main__":
+    # 两个数据源(用其中一个就可以)，criteo_sampled_data是参考代码中提供的数据，user和movie是小象数据
+    data_path = '../dataset/criteo_sampled_data/criteo_sampled_data.csv'
+    data, dense_feats, sparse_feats = data_load(data_path)
+    total_data, dense_inputs, sparse_inputs, sparse_1d_embed = feature_construction(data, dense_feats, sparse_feats)
+    # Linear
+    linear_part = linear(dense_inputs, sparse_1d_embed)
+    # CIN
+    sparse_kd_embed = get_sparse_kd_embed(sparse_feats, sparse_inputs, 8)
+    # 构建feature_map X0
+    input_feature_map = Concatenate(axis=1)(sparse_kd_embed)
+    # 生成CIN, input_feature_map来自sparse特征
+    # 经过3层CIN网络，每一层filter个数是12，意味着会产生出3个12*D的feature maps，再经过sum-pooling和concat后，就得到3*12=36维的向量
+    cin_layer = build_cin(input_feature_map)
+    # DNN
+    fc_layer_output = dnn(sparse_kd_embed)
+    model = output_and_model(linear_part, cin_layer, fc_layer_output)
 
-# 训练模型
-train_data = total_data.loc[:800000-1]
-valid_data = total_data.loc[800000:]
+    # 训练模型
+    train_data = total_data.loc[:800000-1]
+    valid_data = total_data.loc[800000:]
 
-# 下面这是什么类型，列表中包含array？？？
-train_dense_x = [train_data[f].values for f in dense_feats]
-train_sparse_x = [train_data[f].values for f in sparse_feats]
-train_label = [train_data['label'].values]
+    # 下面这是什么类型，列表中包含array？？？
+    train_dense_x = [train_data[f].values for f in dense_feats]
+    train_sparse_x = [train_data[f].values for f in sparse_feats]
+    train_label = [train_data['label'].values]
 
-val_dense_x = [valid_data[f].values for f in dense_feats]
-val_sparse_x = [valid_data[f].values for f in sparse_feats]
-val_label = [valid_data['label'].values]
+    val_dense_x = [valid_data[f].values for f in dense_feats]
+    val_sparse_x = [valid_data[f].values for f in sparse_feats]
+    val_label = [valid_data['label'].values]
 
-model.fit(train_dense_x+train_sparse_x, train_label, epochs=5, batch_size=128,
-          validation_data=(val_dense_x+val_sparse_x, val_label))
-print('finish')
+    model.fit(train_dense_x+train_sparse_x, train_label, epochs=5, batch_size=128,
+              validation_data=(val_dense_x+val_sparse_x, val_label))
+    print('finish')
 
 # model.有evaluate，predict等方法
 
